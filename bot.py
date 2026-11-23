@@ -79,8 +79,8 @@ TEXTS = {
     "received": {"ru": "Запись получена. Скачиваю...", "en": "Recording received. Downloading..."},
     "downloaded": {"ru": "Запись скачана. Делаю транскрипт...", "en": "Downloaded. Transcribing..."},
     "transcribed": {
-        "ru": "Транскрипт готов ({lang}). Провожу аудит диалога...",
-        "en": "Transcript ready ({lang}). Auditing the conversation...",
+        "ru": "Транскрипт готов ({language}). Провожу аудит диалога...",
+        "en": "Transcript ready ({language}). Auditing the conversation...",
     },
     "sending": {"ru": "Аудит готов. Отправляю результат...", "en": "Audit ready. Sending the result..."},
     "failed": {
@@ -132,7 +132,7 @@ TRANSCRIPT_INTRO = {
 }
 
 
-def t(key: str, lang: str, **kw) -> str:
+def t(key: str, lang: str, /, **kw) -> str:  # lang только позиционный, чтобы не путался с полями текста
     text = TEXTS[key].get(lang) or TEXTS[key]["ru"]
     return text.format(**kw) if kw else text
 
@@ -572,7 +572,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
 
         # Аудит пишется на языке разговора, служебные сообщения — на языке пользователя.
-        await progress_message.edit_text(t("transcribed", lang, lang=LANG_NAMES[lang][call_lang]))
+        await progress_message.edit_text(t("transcribed", lang, language=LANG_NAMES[lang][call_lang]))
         analysis = await asyncio.to_thread(
             analyze_with_openai, transcript, audit_prompts[call_lang], settings, call_lang
         )
