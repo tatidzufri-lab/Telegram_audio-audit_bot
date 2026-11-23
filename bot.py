@@ -13,17 +13,143 @@ import psycopg2
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
-from telegram import Message, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 ASSEMBLYAI_UPLOAD_URL = "https://api.assemblyai.com/v2/upload"
 ASSEMBLYAI_TRANSCRIPT_URL = "https://api.assemblyai.com/v2/transcript"
 ASSEMBLYAI_SPEECH_MODELS = ["universal-3-pro", "universal-2"]
-ASSEMBLYAI_LANGUAGE_CODE = "ru"
+# Язык записи определяет AssemblyAI. Ждем русский или английский; если не уверен — русский.
+ASSEMBLYAI_EXPECTED_LANGUAGES = ["ru", "en"]
+ASSEMBLYAI_FALLBACK_LANGUAGE = "ru"
+LANGS = ("ru", "en")
 MESSAGE_CHUNK_SIZE = 3900
 DB_CONNECTION_RETRIES = 30
 DB_CONNECTION_RETRY_DELAY_SECONDS = 2
+
+
+TEXTS = {
+    "start": {
+        "ru": (
+            "Привет! Я — куратор качества продаж ретрита «Познай себя».\n\n"
+            "Пришлите аудио или видеозапись разговора менеджера с потенциальной участницей. "
+            "Я сделаю транскрипт и проверю диалог по 11 ключевым блокам, "
+            "после чего пришлю краткие рекомендации по доработке.\n\n"
+            "Записи на английском тоже принимаю: аудит будет на языке разговора. Сменить язык бота: /language"
+        ),
+        "en": (
+            "Hi! I'm the Sales Quality Curator of the Know Yourself retreat.\n\n"
+            "Send me an audio or video recording of a call between a sales manager and a potential participant. "
+            "I'll transcribe it, check the conversation against 11 key topics "
+            "and send you short recommendations.\n\n"
+            "I accept calls in English and Russian; the audit comes in the language of the call. "
+            "Change the bot language: /language"
+        ),
+    },
+    "help": {
+        "ru": (
+            "Как пользоваться:\n"
+            "1) Пришлите запись разговора менеджера с клиенткой (аудио или видео).\n"
+            "2) Дождитесь, пока я расшифрую запись и проверю диалог по 11 ключевым блокам.\n"
+            "3) Получите итоговый аудит с рекомендациями прямо в чате.\n\n"
+            "Длинные записи могут обрабатываться несколько минут — это нормально.\n"
+            "Разговор может быть на русском или английском: язык я определю сама."
+        ),
+        "en": (
+            "How it works:\n"
+            "1) Send a recording of a call between a manager and a client (audio or video).\n"
+            "2) Wait while I transcribe it and check the conversation against 11 key topics.\n"
+            "3) Get the audit with recommendations right here in the chat.\n\n"
+            "Long recordings can take a few minutes. That's normal.\n"
+            "The call can be in English or Russian; I detect the language myself."
+        ),
+    },
+    "no_media": {
+        "ru": "Кажется, во вложении нет подходящей записи. Пришлите аудио или видео разговора менеджера с клиенткой.",
+        "en": "It looks like there is no suitable recording attached. Please send an audio or video of a call between a manager and a client.",
+    },
+    "received": {"ru": "Запись получена. Скачиваю...", "en": "Recording received. Downloading..."},
+    "downloaded": {"ru": "Запись скачана. Делаю транскрипт...", "en": "Downloaded. Transcribing..."},
+    "transcribed": {
+        "ru": "Транскрипт готов ({lang}). Провожу аудит диалога...",
+        "en": "Transcript ready ({lang}). Auditing the conversation...",
+    },
+    "sending": {"ru": "Аудит готов. Отправляю результат...", "en": "Audit ready. Sending the result..."},
+    "failed": {
+        "ru": "Не удалось обработать запись. Попробуйте отправить файл ещё раз чуть позже.",
+        "en": "I couldn't process the recording. Please try sending the file again a bit later.",
+    },
+    "unsupported": {
+        "ru": "Я работаю только с записями разговоров. Пришлите, пожалуйста, аудио или видео — и я проведу аудит.",
+        "en": "I only work with call recordings. Please send an audio or video file, and I'll audit it.",
+    },
+    "choose_language": {"ru": "Выберите язык бота:", "en": "Choose the bot language:"},
+    "language_set": {
+        "ru": "Готово, общаемся по-русски. Аудит все равно придет на языке записи.",
+        "en": "Done, I'll talk to you in English. The audit still comes in the language of the recording.",
+    },
+}
+LANG_NAMES = {
+    "ru": {"ru": "русский", "en": "английский"},
+    "en": {"ru": "Russian", "en": "English"},
+}
+COMMANDS = {
+    "ru": [("start", "Начать"), ("help", "Как пользоваться"), ("language", "Сменить язык / Change language")],
+    "en": [("start", "Start"), ("help", "How it works"), ("language", "Change language / Сменить язык")],
+}
+DESCRIPTION_EN = (
+    "Sales Quality Curator of the Know Yourself retreat. Send a recording of a sales call "
+    "in English or Russian, and I'll check it against 11 key topics and the brand tone of voice."
+)
+SHORT_DESCRIPTION_EN = "Audits sales call recordings: 11 key topics and the brand tone of voice."
+SYSTEM_PROMPTS = {
+    "ru": (
+        "Ты — Куратор качества продаж ретрита «Познай себя». "
+        "Проводишь аудит диалога менеджера с потенциальной участницей строго по правилам "
+        "архитектурного документа из сообщения пользователя. "
+        "Следуй правилам и шаблонам формулировок дословно, не добавляй лишних пояснений, "
+        "не придумывай содержание сверх транскрипта."
+    ),
+    "en": (
+        "You are the Sales Quality Curator of the Know Yourself retreat. "
+        "You audit a conversation between a manager and a potential participant strictly by the rules "
+        "of the architecture document in the user message. "
+        "Follow the rules and wording templates exactly, add no extra explanations, "
+        "and do not invent anything beyond the transcript."
+    ),
+}
+TRANSCRIPT_INTRO = {
+    "ru": "Ниже транскрипт диалога менеджера с клиенткой для аудита.",
+    "en": "Below is the transcript of the conversation between the manager and the client to audit.",
+}
+
+
+def t(key: str, lang: str, **kw) -> str:
+    text = TEXTS[key].get(lang) or TEXTS[key]["ru"]
+    return text.format(**kw) if kw else text
+
+
+def lang_from_telegram(language_code: Optional[str]) -> str:
+    if not language_code:
+        return "ru"
+    return "ru" if language_code.lower().startswith(("ru", "uk", "be", "kk")) else "en"
+
+
+def user_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    """Язык общения: выбранный пользователем или язык его Telegram."""
+    lang = context.user_data.get("lang")
+    if lang in LANGS:
+        return lang
+    user = update.effective_user
+    return lang_from_telegram(user.language_code if user else None)
 
 
 class AssemblyAIError(RuntimeError):
@@ -211,7 +337,11 @@ def create_assemblyai_transcript(upload_url: str, api_key: str) -> str:
     payload = {
         "audio_url": upload_url,
         "speech_models": ASSEMBLYAI_SPEECH_MODELS,
-        "language_code": ASSEMBLYAI_LANGUAGE_CODE,
+        "language_detection": True,
+        "language_detection_options": {
+            "expected_languages": ASSEMBLYAI_EXPECTED_LANGUAGES,
+            "fallback_language": ASSEMBLYAI_FALLBACK_LANGUAGE,
+        },
     }
     response = requests.post(
         ASSEMBLYAI_TRANSCRIPT_URL,
@@ -228,7 +358,8 @@ def create_assemblyai_transcript(upload_url: str, api_key: str) -> str:
     return transcript_id
 
 
-def poll_assemblyai_transcript(transcript_id: str, api_key: str, timeout_seconds: int = 3600) -> str:
+def poll_assemblyai_transcript(transcript_id: str, api_key: str, timeout_seconds: int = 3600) -> tuple[str, str]:
+    """Возвращает текст и язык записи (ru или en)."""
     headers = {"authorization": api_key}
     deadline = time.monotonic() + timeout_seconds
     endpoint = f"{ASSEMBLYAI_TRANSCRIPT_URL}/{transcript_id}"
@@ -244,7 +375,8 @@ def poll_assemblyai_transcript(transcript_id: str, api_key: str, timeout_seconds
             text = (payload.get("text") or "").strip()
             if not text:
                 raise AssemblyAIError("AssemblyAI returned empty transcript.")
-            return text
+            language = (payload.get("language_code") or ASSEMBLYAI_FALLBACK_LANGUAGE).split("_")[0]
+            return text, language if language in LANGS else ASSEMBLYAI_FALLBACK_LANGUAGE
 
         if status == "error":
             raise AssemblyAIError(payload.get("error") or "Unknown AssemblyAI error.")
@@ -254,13 +386,13 @@ def poll_assemblyai_transcript(transcript_id: str, api_key: str, timeout_seconds
     raise TimeoutError("Timed out while waiting for AssemblyAI transcription.")
 
 
-def transcribe_video(file_path: Path, api_key: str) -> str:
+def transcribe_video(file_path: Path, api_key: str) -> tuple[str, str]:
     upload_url = upload_to_assemblyai(file_path=file_path, api_key=api_key)
     transcript_id = create_assemblyai_transcript(upload_url=upload_url, api_key=api_key)
     return poll_assemblyai_transcript(transcript_id=transcript_id, api_key=api_key)
 
 
-def analyze_with_openai(transcript: str, audit_prompt: str, settings: Settings) -> str:
+def analyze_with_openai(transcript: str, audit_prompt: str, settings: Settings, lang: str = "ru") -> str:
     client = OpenAI(api_key=settings.openai_api_key)
 
     response = client.chat.completions.create(
@@ -269,19 +401,13 @@ def analyze_with_openai(transcript: str, audit_prompt: str, settings: Settings) 
         messages=[
             {
                 "role": "system",
-                "content": (
-                    "Ты — Куратор качества продаж ретрита «Познай себя». "
-                    "Проводишь аудит диалога менеджера с потенциальной участницей строго по правилам "
-                    "архитектурного документа из сообщения пользователя. "
-                    "Следуй правилам и шаблонам формулировок дословно, не добавляй лишних пояснений, "
-                    "не придумывай содержание сверх транскрипта."
-                ),
+                "content": SYSTEM_PROMPTS[lang],
             },
             {
                 "role": "user",
                 "content": (
                     f"{audit_prompt}\n\n"
-                    "Ниже транскрипт диалога менеджера с клиенткой для аудита.\n"
+                    f"{TRANSCRIPT_INTRO[lang]}\n"
                     "<transcript>\n"
                     f"{transcript}\n"
                     "</transcript>"
@@ -361,29 +487,55 @@ def split_for_telegram(text: str, chunk_size: int = MESSAGE_CHUNK_SIZE) -> list[
     return chunks
 
 
-async def start_handler(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-
-    await update.message.reply_text(
-        "Привет! Я — куратор качества продаж ретрита «Познай себя».\n\n"
-        "Пришлите аудио или видеозапись разговора менеджера с потенциальной участницей. "
-        "Я сделаю транскрипт и проверю диалог по 11 ключевым блокам, "
-        "после чего пришлю краткие рекомендации по доработке."
-    )
+    # t.me/<бот>?start=en — ссылка с английской страницы сайта
+    if context.args and context.args[0] in LANGS:
+        context.user_data["lang"] = context.args[0]
+    await update.message.reply_text(t("start", user_lang(update, context)))
 
 
-async def help_handler(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
+    await update.message.reply_text(t("help", user_lang(update, context)))
 
-    await update.message.reply_text(
-        "Как пользоваться:\n"
-        "1) Пришлите запись разговора менеджера с клиенткой (аудио или видео).\n"
-        "2) Дождитесь, пока я расшифрую запись и проверю диалог по 11 ключевым блокам.\n"
-        "3) Получите итоговый аудит с рекомендациями прямо в чате.\n\n"
-        "Длинные записи могут обрабатываться несколько минут — это нормально."
-    )
+
+LANGUAGE_KEYBOARD = InlineKeyboardMarkup(
+    [[
+        InlineKeyboardButton("🇷🇺 Русский", callback_data="lang:ru"),
+        InlineKeyboardButton("🇬🇧 English", callback_data="lang:en"),
+    ]]
+)
+
+
+async def language_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    await update.message.reply_text(t("choose_language", user_lang(update, context)), reply_markup=LANGUAGE_KEYBOARD)
+
+
+async def language_shortcut_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.text:
+        return
+    lang = update.message.text.lstrip("/").split("@")[0].split()[0].lower()
+    if lang in LANGS:
+        context.user_data["lang"] = lang
+        await update.message.reply_text(t("language_set", lang))
+
+
+async def language_choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.data:
+        return
+    lang = query.data.split(":", 1)[1]
+    await query.answer()
+    if lang not in LANGS:
+        return
+    context.user_data["lang"] = lang
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_text(t("language_set", lang))
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -391,23 +543,21 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     message = update.message
+    lang = user_lang(update, context)
     file_data = extract_media_file_data(message)
     if not file_data:
-        await message.reply_text(
-            "Кажется, во вложении нет подходящей записи. "
-            "Пришлите аудио или видео разговора менеджера с клиенткой."
-        )
+        await message.reply_text(t("no_media", lang))
         return
 
     file_id, file_unique_id, filename = file_data
     settings: Settings = context.application.bot_data["settings"]
-    audit_prompt: str = context.application.bot_data["audit_prompt"]
+    audit_prompts: dict[str, str] = context.application.bot_data["audit_prompts"]
     user_id = message.from_user.id if message.from_user else None
     username = message.from_user.username if message.from_user else None
     transcript: Optional[str] = None
     analysis: Optional[str] = None
 
-    progress_message = await message.reply_text("Запись получена. Скачиваю...")
+    progress_message = await message.reply_text(t("received", lang))
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
 
     try:
@@ -416,11 +566,16 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             telegram_file = await context.bot.get_file(file_id)
             await telegram_file.download_to_drive(custom_path=str(local_path))
 
-            await progress_message.edit_text("Запись скачана. Делаю транскрипт...")
-            transcript = await asyncio.to_thread(transcribe_video, local_path, settings.assemblyai_api_key)
+            await progress_message.edit_text(t("downloaded", lang))
+            transcript, call_lang = await asyncio.to_thread(
+                transcribe_video, local_path, settings.assemblyai_api_key
+            )
 
-        await progress_message.edit_text("Транскрипт готов. Провожу аудит диалога...")
-        analysis = await asyncio.to_thread(analyze_with_openai, transcript, audit_prompt, settings)
+        # Аудит пишется на языке разговора, служебные сообщения — на языке пользователя.
+        await progress_message.edit_text(t("transcribed", lang, lang=LANG_NAMES[lang][call_lang]))
+        analysis = await asyncio.to_thread(
+            analyze_with_openai, transcript, audit_prompts[call_lang], settings, call_lang
+        )
 
         try:
             await asyncio.to_thread(
@@ -440,7 +595,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as db_error:
             logging.exception("Failed to save successful audit to Postgres: %s", db_error)
 
-        await progress_message.edit_text("Аудит готов. Отправляю результат...")
+        await progress_message.edit_text(t("sending", lang))
         for chunk in split_for_telegram(analysis):
             await message.reply_text(chunk)
 
@@ -467,27 +622,37 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as db_error:
             logging.exception("Failed to save failed audit to Postgres: %s", db_error)
 
-        await progress_message.edit_text(
-            "Не удалось обработать запись. Попробуйте отправить файл ещё раз чуть позже."
-        )
+        await progress_message.edit_text(t("failed", lang))
 
 
-async def handle_unsupported_message(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_unsupported_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
-    await update.message.reply_text(
-        "Я работаю только с записями разговоров. "
-        "Пришлите, пожалуйста, аудио или видео — и я проведу аудит."
-    )
+    await update.message.reply_text(t("unsupported", user_lang(update, context)))
 
 
-def build_application(settings: Settings, audit_prompt: str) -> Application:
-    app = Application.builder().token(settings.telegram_bot_token).build()
+async def setup_bot_profile(app: Application) -> None:
+    """Меню команд на двух языках и описание для англоязычных пользователей Telegram."""
+    try:
+        for lang, code in (("ru", None), ("ru", "ru"), ("ru", "uk"), ("en", "en")):
+            commands = [BotCommand(c, d) for c, d in COMMANDS[lang]]
+            await app.bot.set_my_commands(commands, language_code=code)
+        await app.bot.set_my_description(DESCRIPTION_EN, language_code="en")
+        await app.bot.set_my_short_description(SHORT_DESCRIPTION_EN, language_code="en")
+    except Exception:
+        logging.exception("Could not set bot commands/description")
+
+
+def build_application(settings: Settings, audit_prompts: dict[str, str]) -> Application:
+    app = Application.builder().token(settings.telegram_bot_token).post_init(setup_bot_profile).build()
     app.bot_data["settings"] = settings
-    app.bot_data["audit_prompt"] = audit_prompt
+    app.bot_data["audit_prompts"] = audit_prompts
 
     app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("help", help_handler))
+    app.add_handler(CommandHandler("language", language_handler))
+    app.add_handler(CommandHandler(["en", "ru"], language_shortcut_handler))
+    app.add_handler(CallbackQueryHandler(language_choice_handler, pattern=r"^lang:"))
     app.add_handler(
         MessageHandler(
             filters.VIDEO | filters.Document.VIDEO | filters.AUDIO | filters.Document.AUDIO,
@@ -511,10 +676,13 @@ def main() -> None:
 
     settings = Settings.from_env()
     init_database_with_retry(settings.database_url)
-    prompt_path = Path(__file__).with_name("prompt.md")
-    audit_prompt = load_audit_prompt(prompt_path)
+    here = Path(__file__).parent
+    audit_prompts = {
+        "ru": load_audit_prompt(here / "prompt.md"),
+        "en": load_audit_prompt(here / "prompt_en.md"),
+    }
 
-    app = build_application(settings=settings, audit_prompt=audit_prompt)
+    app = build_application(settings=settings, audit_prompts=audit_prompts)
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
