@@ -1,70 +1,72 @@
-# AI-аудитор продажных звонков ретрита «Познай себя»
+# AI call auditor: sales stages and tone of voice checked by a bot
 
-Telegram-бот для руководителя отдела продаж. Куратор присылает запись разговора менеджера с потенциальной участницей, бот расшифровывает ее и возвращает короткий разбор: какие этапы разговора пропущены и где менеджер вышел из тона бренда. Демо: [@curator_audit_bot](https://t.me/curator_audit_bot).
+A Telegram bot for a sales lead. A curator sends in a recording of a manager's call with a prospective guest; the bot transcribes it and returns a short review: which stages of the conversation were skipped and where the manager broke the brand's tone. Demo: [@curator_audit_bot](https://t.me/curator_audit_bot).
 
-![Ответ бота с пропусками и нарушениями тона](demo/audit-output-with-tone-violations.png)
+This is a practice project. The retreat, "Know Yourself" («Познай себя»), is a training scenario of a retreat center, not a real organization. Calls and reports work in Russian and English. Case study: [tatidzufri.com/en/case/dialog-auditor](https://tatidzufri.com/en/case/dialog-auditor).
 
-## О проекте
+![The bot's report with skipped stages and tone violations](demo/audit-output-with-tone-violations.png)
 
-Бот сверяет каждый разговор с одним и тем же чек-листом из 11 смысловых блоков, поэтому оценки не зависят от того, кто и в каком настроении слушал запись. Каждая проверка сохраняется в базу, и по истории видно, какие пункты менеджеры пропускают чаще всего.
+## About the project
 
-## Задача
+The bot checks every call against the same 11-point checklist, so the score doesn't depend on who listened and in what mood. Every check is saved to the database, and the history shows which points managers skip most often.
 
-В продажах ретрита менеджер должен провести клиентку по понятной логике: теплый контакт, выявление запроса, рассказ о программе и ценностях, стоимость, работа с сомнениями, следующий шаг. Слушать и разбирать каждый звонок вручную долго, а оценки получаются субъективными и разными у разных проверяющих.
+## The task
 
-## Решение
+In retreat sales a manager has to lead the prospect through a clear sequence: warm contact, finding out what she needs, the program and its values, the price, handling doubts, the next step. Listening to and reviewing each call by hand is slow, and scores end up subjective and different from one reviewer to another.
 
-1. **Запись в чат.** Куратор отправляет боту аудиофайл или видео со звонком.
-2. **Расшифровка.** AssemblyAI переводит речь в текст. Сервис справляется с длинными записями и разговором двух собеседников.
-3. **Аудит по чек-листу.** Модель OpenAI получает расшифровку и инструкцию из `prompt.md` и проверяет 11 блоков: приветствие и контакт, выявление потребности, ценности ретрита, программа и формат, подходит ли ретрит этой участнице, результат после ретрита, работа с возражениями, стоимость и условия, следующий шаг, тон без давления, решение клиентки.
-4. **Отчет по шаблону.** Сначала пропущенные блоки, потом нарушения тона бренда с точной цитатой из реплики менеджера. Формулировки заданы заранее, поэтому отчеты по разным менеджерам легко сравнивать. Если все 11 блоков закрыты и тон не нарушен, бот пишет: «Отлично проведенный диалог!»
-5. **История в базе.** Кто прислал, какой файл, расшифровка, итоговый аудит, успех или ошибка. Все это сохраняется в PostgreSQL.
+## How it works
 
-Чек-лист и правила тона живут в `prompt.md`. Чтобы поменять логику аудита, код трогать не нужно.
+1. **A recording in the chat.** The curator sends the bot an audio or video file of the call.
+2. **Transcription.** AssemblyAI turns speech into text. It handles long recordings and two speakers.
+3. **Checklist audit.** An OpenAI model gets the transcript and the instruction from `prompt.md` and checks 11 points: greeting and rapport, finding the need, the retreat's values, program and format, whether the retreat suits this guest, the outcome after the retreat, handling objections, price and terms, the next step, tone without pressure, the guest's decision.
+4. **A report in a fixed format.** Skipped points first, then brand tone violations with an exact quote from the manager. The wording is predefined, so reports on different managers are easy to compare. If all 11 points are covered and the tone holds, the bot replies: "A well-run conversation!"
+5. **History in the database.** Who sent it, which file, the transcript, the final audit, success or error. All of it goes to PostgreSQL.
 
-**Два языка.** Звонок может быть на русском или английском. AssemblyAI сам определяет язык записи (ждет `ru` или `en`, при сомнении берет русский), и аудит пишется на языке разговора по `prompt.md` или `prompt_en.md`. В английской версии свой список слов давления: "hurry", "discount", "today only", "only N spots left". Служебные сообщения бота идут на языке пользователя: из настроек Telegram, по ссылке `?start=en` или по команде `/language`. Пример английского звонка: `demo/audio_test_en.mp3` (сгенерирован OpenAI TTS).
+The checklist and tone rules live in `prompt.md`. Changing the audit logic doesn't require touching the code.
 
-## Результат
+**Two languages.** A call can be in Russian or English. AssemblyAI detects the language of the recording (it expects `ru` or `en` and falls back to Russian when unsure), and the audit is written in the call's language from `prompt.md` or `prompt_en.md`. The English version has its own list of pressure words: "hurry", "discount", "today only", "only N spots left". The bot's service messages follow the user's language: from Telegram settings, the `?start=en` link or the `/language` command. A sample English call: `demo/audio_test_en.mp3` (generated with OpenAI TTS).
 
-- Качество звонков контролируется без ручного прослушивания.
-- Каждый менеджер получает конкретные рекомендации по своему разговору.
-- Все менеджеры оцениваются по одному чек-листу, и общение с клиентками становится единообразным.
-- История проверок дает данные для управления продажами: какие пункты проседают и как меняется качество со временем.
+## Results
 
-## Стек технологий
+- Calls can be checked against the checklist without listening to them.
+- Each manager gets specific feedback on their own conversation.
+- Every manager is scored by the same checklist.
+- The check history shows which points slip and how quality changes over time.
 
-| Технология | Зачем используется |
+## Tech stack
+
+| Technology | What it's for |
 |---|---|
-| **Python** | Язык бота, в контейнере 3.12 |
-| **python-telegram-bot** | Прием записей, скачивание файлов, ответы и статусы обработки в чате |
-| **AssemblyAI** | Распознавание речи в аудио и видео |
-| **OpenAI API** | Аудит расшифровки по чек-листу. Модель задается в `.env`, по умолчанию `gpt-4.1-mini` |
-| **prompt.md** | Роль куратора, 11 критериев, правила тона и шаблоны формулировок |
-| **PostgreSQL + psycopg2** | История проверок для аналитики |
-| **Docker Compose** | Бот и база поднимаются одной командой |
+| **Python** | Bot language, 3.12 in the container |
+| **python-telegram-bot** | Receiving recordings, downloading files, replies and progress messages in the chat |
+| **AssemblyAI** | Speech recognition for audio and video |
+| **OpenAI API** | Audits the transcript against the checklist. The model is set in `.env`, `gpt-4.1-mini` by default |
+| **prompt.md / prompt_en.md** | The curator role, 11 criteria, tone rules and report templates |
+| **PostgreSQL + psycopg2** | Check history for analytics |
+| **Docker Compose** | Starts the bot and the database with one command |
 
-## Структура репозитория
+## Repository structure
 
-- `bot.py`: бот целиком, от приема файла до записи в базу.
-- `prompt.md`: инструкция для модели.
-- `demo/`: пример отчета и тестовая запись `audio_test.mp3`.
+- `bot.py`: the whole bot, from receiving a file to saving to the database.
+- `prompt.md`, `prompt_en.md`: instructions for the model in Russian and English.
+- `demo/`: a sample report and test recordings `audio_test.mp3` and `audio_test_en.mp3`.
 
-## Запуск
+## Running it
 
 ```bash
 cp .env.example .env      # TELEGRAM_BOT_TOKEN, ASSEMBLYAI_API_KEY, OPENAI_API_KEY
 docker compose up -d --build
 ```
 
-Для запуска без Docker нужен свой PostgreSQL, строка подключения задается в `DATABASE_URL`:
+Without Docker you need your own PostgreSQL; the connection string goes in `DATABASE_URL`:
 
 ```bash
 pip install -r requirements.txt
 python bot.py
 ```
 
-Проверить бота можно на записи `demo/audio_test.mp3`.
+You can try the bot on `demo/audio_test.mp3` or `demo/audio_test_en.mp3`.
 
-## Автор
+## Author
 
-Татьяна Дзюбас, AI-инженер по автоматизации. Делаю Telegram-ботов, RAG-ассистентов и LLM-агентов, которые снимают рутину с небольших команд. Кейсы и контакты на [tatidzufri.com](https://tatidzufri.com).
+Tetiana Dziubas, AI automation engineer. I build Telegram bots, RAG assistants and LLM agents that take routine work off small teams. Case studies and contact: [tatidzufri.com/en](https://tatidzufri.com/en/).
